@@ -1,0 +1,118 @@
+---
+title: "test.Rmd"
+author: "ShuilinL"
+date: '2024-07-05'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+# /disk/share/anaconda3/bin/R
+knitr::opts_chunk$set(echo = TRUE)
+library(CellChat)
+library(Seurat)
+library(NMF)
+library(ggalluvial)
+```
+
+# load data
+```{r}
+ori_sce <- readRDS(paste0("../result_review/anno_res/", "sce.rds"))
+ori_sce$Group <- ifelse(ori_sce$stim %in% c("LTPD1", "LTPD2", "LTPD3", "LTPD4"), "LTPD", "STPD")
+item = "LPD"  # PD  SPD LPD PD_split 
+
+if(item == "PD"){
+  sce = ori_sce
+  sce$CellType <- sce$cell
+}else if(item == "SPD"){
+  sce <- subset(x = ori_sce, subset = Group == "STPD")
+  sce$CellType <- sce$cell
+}else if(item == "LPD"){
+  sce <- subset(x = ori_sce, subset = Group == "LTPD")
+  sce$CellType <- sce$cell
+}else if(item == "PD_split"){
+  sce <- ori_sce
+  sce$CellType <- paste0(sce$Group, "_", sce$cell)
+}
+```
+
+# convert data
+```{r}
+data.input_0 = GetAssayData(sce, assay = "RNA", layer = "data") # normalized data matrix
+meta_dat_0 = sce@meta.data # a dataframe with rownames containing cell meta data
+
+cell.use = rownames(meta_dat_0)
+data.input = data.input_0[, cell.use]
+meta_dat = meta_dat_0[cell.use, ]
+meta_dat$samples = rownames(meta_dat)
+```
+
+# CellChat object
+```{r}
+cellchat <- createCellChat(object = data.input, meta = meta_dat, group.by = "CellType")
+cellchat <- addMeta(cellchat, meta = meta_dat)
+cellchat <- setIdent(cellchat, ident.use = "CellType") # set "labels" as default cell identity
+levels(cellchat@idents) # show factor levels of the cell labels
+groupSize <- as.numeric(table(cellchat@idents)) # number of cells in each cell group
+
+CellChatDB <- CellChatDB.human # use CellChatDB.mouse if running on mouse data
+showDatabaseCategory(CellChatDB)
+
+interaction_input <- CellChatDB$interaction
+complex_input <- CellChatDB$complex
+cofactor_input <- CellChatDB$cofactor
+geneInfo <- CellChatDB$geneInfo
+CellChatDB <- list()
+CellChatDB$interaction <- interaction_input
+CellChatDB$complex <- complex_input
+CellChatDB$cofactor <- cofactor_input
+CellChatDB$geneInfo <- geneInfo
+
+dplyr::glimpse(CellChatDB$interaction)
+
+CellChatDB[["interaction"]][["pathway_name"]] %>% unique() %>% sort()
+
+CellChatDB.use <- subsetDB(CellChatDB, search = "Secreted Signaling")
+cellchat@DB <- CellChatDB.use
+
+# subset表达数据，提取仅在互作数据库中的基因，减少下游分析数据量
+cellchat <- subsetData(cellchat)
+# 识别在单个细胞类型中过表达配/受体
+cellchat <- identifyOverExpressedGenes(cellchat)
+# 识别过表达互作对
+cellchat <- identifyOverExpressedInteractions(cellchat)
+# 平滑表达值（目的是消除dropout影响，可选不用）
+cellchat <- projectData(cellchat, PPI.human)
+```
+
+# communicate net
+
+## 细胞通讯互作可能性的计算
+```{r}
+# 互作可能性计算
+cellchat <- computeCommunProb(cellchat, raw.use = TRUE)
+# 过滤表达细胞比例低的互作对
+cellchat <- filterCommunication(cellchat, min.cells = 10)
+
+# 提取关注得细胞间通讯关系
+df.net <- subsetCommunication(cellchat)
+
+cellchat <- computeCommunProbPathway(cellchat)
+# cellchat@netP
+
+cellchat <- aggregateNet(cellchat)
+groupSize <- as.numeric(table(cellchat@idents))
+
+out_dir =  "../result_review/CellChat/"
+
+if(item == "PD"){
+  out_put = "input_CellChat"
+}else if(item == "SPD"){
+  out_put = "input_CellChat_SPD"
+}else if(item == "LPD"){
+  out_put = "input_CellChat_LPD"
+}else if(item == "PD_split"){
+  out_put = "input_CellChat_PD_split"
+}
+
+save(cellchat, df.net, file = paste0(out_dir, out_put, ".rda"))
+```

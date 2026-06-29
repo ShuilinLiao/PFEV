@@ -1,0 +1,232 @@
+---
+title: "Untitled"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+suppressMessages(library(Seurat))
+suppressMessages(library(dplyr))
+suppressMessages(library(ggplot2))
+suppressMessages(library(reshape2))
+suppressMessages(library(tidyverse))
+suppressMessages(library(clusterProfiler))
+```
+
+# load data
+```{r}
+item = "PD" 
+res2 <- readRDS(paste0("../result_review/", item, "_integrated_rds/", "PF_combined.rds"))
+DefaultAssay(res2) <- 'RNA'
+res2 <- JoinLayers(res2)
+root_dir <- "../result_review/"
+out_dir <- paste0("../result_review/anno_res/")
+plot_dir <- paste0("../result_review/plot/")
+source("functions.R")
+source("parameters.R")
+
+if(item == "HC"){
+  marker = def_markers_normal
+  sample_order = sample_order_HC
+  cell_order = cell_order_HC
+  cols_celltypes = cols_celltypes_HC
+}else{
+ marker = def_markers_PD
+ sample_order = sample_order_PD
+ cell_order = cell_order_PD
+ cols_celltypes = cols_celltypes_PD
+}
+```
+
+# bubble plot
+```{r}
+cluster.averages <- AverageExpression(res2, slot = 'data', layer = "data", return.seurat = T)
+scedata <- GetAssayData(cluster.averages, assay = "RNA", layer = "data")
+all_genes <- rownames(scedata)
+
+for(i in 1:length(marker)){
+  marker[[i]] <- intersect(marker[[i]], all_genes)
+}
+marker_con = unlist(marker)
+scedata2 = scedata[marker_con,]
+
+p <- DotPlot(res2, features = marker, assay = "RNA", group.by = "seurat_clusters", cols = c("#e0fcff", "#3490de")) +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5, size = 9),
+        panel.grid.major = element_blank(), # background, set blank
+        panel.grid.minor = element_blank(),
+        panel.background = element_blank(),
+        panel.border = element_rect(colour = "black", size = 1),
+        plot.title = element_text(hjust = 0.5),
+        legend.title = element_blank(),
+        strip.background = element_rect(fill = "white",color="white"),
+        strip.text = element_text(face = "bold", size = 8))
+
+pdf(paste0(plot_dir, "1.1_markergenes_barplot.pdf"), width = 16, height = 7)
+p
+dev.off()
+
+p <- DotPlot(res2, features = def_markers_PD_8, assay = "RNA", group.by = "seurat_clusters", cols = c("#e0fcff", "#3490de")) +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5, size = 9),
+        panel.grid.major = element_blank(), # background, set blank
+        panel.grid.minor = element_blank(),
+        panel.background = element_blank(),
+        panel.border = element_rect(colour = "black", size = 1),
+        plot.title = element_text(hjust = 0.5),
+        legend.title = element_blank(),
+        strip.background = element_rect(fill = "white",color="white"),
+        strip.text = element_text(face = "bold", size = 8))
+
+pdf(paste0(plot_dir, "1.2_markergenes_barplot.pdf"), width = 16, height = 7)
+p
+dev.off()
+```
+
+# 1 rename clusters and save sce_rename
+```{r}
+anno <- read.csv(paste0(root_dir, "anno.csv"))
+
+sce = res2
+meta <- sce@meta.data %>% data.frame()
+new.cluster.ids <- anno$cell_type
+names(new.cluster.ids) <- levels(sce)
+sce <- RenameIdents(sce, new.cluster.ids)
+sce$cell <- sce@active.ident
+table(sce$cell)
+```
+
+## heatmap
+```{r}
+cell_types_order = c("Perito", "Mono", "MonoDC", "Bcell", "NKT", "Th", 'Nt')
+DefaultAssay(sce) <- "RNA"
+
+# 基因过滤
+"COL4A1" %in% rownames(sce@assays[["RNA"]])
+"COL4A1" %in% rownames(sce@assays[["SCT"]])
+"COL4A1" %in% rownames(sce@assays[["integrated"]])
+
+genes <- def_markers_PD_8
+all_genes <- unlist(genes)
+available_genes <- rownames(sce[["RNA"]])
+original_order <- seq_along(all_genes)
+names(original_order) <- all_genes
+
+keep_idx <- all_genes %in% available_genes
+genes_to_use <- all_genes[keep_idx]
+genes_to_use_order <- genes_to_use[order(original_order[genes_to_use])]
+
+DefaultAssay(sce) <- 'RNA'
+gene_cell_exp <- AverageExpression(sce,
+                                   features = genes_to_use_order,
+                                   group.by = 'cell', assay = "RNA") 
+gene_cell_exp <- as.data.frame(gene_cell_exp$RNA)
+gene_cell_exp <- gene_cell_exp[genes_to_use_order, ]
+gene_cell_exp2 <- gene_cell_exp[, cell_types_order]
+
+library(ComplexHeatmap)
+df <- data.frame(colnames(gene_cell_exp2))
+colnames(df) <- 'class'
+top_anno = HeatmapAnnotation(df = df,
+                             border = T,
+                             show_annotation_name = F,
+                             gp = gpar(col = 'black'),
+                             col = list(class = c('Mono'="#1f77b4", 'Perito'="#a5cee2", "MonoDC"="#08306b", "NKT"="#b2df8a", 
+                                                  "Th"="#006c2e", "Nt"="#8e0152", "Bcell" = "#de77ae", "Unclassified" = "#cab2d6")),
+                             annotation_legend_param = list(class = list(title = "Cell Type",  at = cell_types_order)))
+marker_exp <- t(scale(t(gene_cell_exp2), scale = T,center = T))
+ph <- Heatmap(marker_exp,
+        cluster_rows = F,
+        cluster_columns = F,
+        show_column_names = F,
+        show_row_names = T,
+        column_title = NULL,
+        heatmap_legend_param = list(title=' '),
+        col = colorRampPalette(c("#0000EF","white","#FDFE00"))(100),
+        border = 'black',
+        rect_gp = gpar(col = "black", lwd = 1),
+        row_names_gp = gpar(fontsize = 10),
+        column_names_gp = gpar(fontsize = 10),
+        top_annotation = top_anno)
+
+tit <- paste0(plot_dir, "2.3_cell_type_markers_heatmap")
+pdf(paste0(tit, ".pdf"), width = 9, height = 7)
+print(ph)
+dev.off()
+f2g(paste0(tit, ".pdf"), paste0(tit, ".png"))
+
+```
+
+# 3 UMAP and tsne
+```{r}
+cell_types_order = c("Perito", "Mono", "MonoDC", "Bcell", "NKT", "Th", 'Nt')
+cols_celltypes <- c('Mono'="#1f77b4", 'Perito'="#a5cee2", "MonoDC"="#08306b", "NKT"="#b2df8a",
+                    "Th"="#006c2e", "Nt"="#8e0152", "Bcell" = "#de77ae" )
+
+sce_plot <- sce
+sce_plot$cell <- factor(sce_plot$cell, levels = cell_types_order)
+
+tit <- paste0(plot_dir, "3.1_rename_cell_type_umap")
+p <- DimPlot(object = sce_plot, label = F, raster = FALSE, reduction = "umap", cols = cols_celltypes) +
+  scale_color_manual(values = cols_celltypes)
+pdf(paste0(tit, ".pdf"), width = 9, height = 7)
+print(p)
+dev.off()
+f2g(paste0(tit, ".pdf"), paste0(tit, ".png"))
+
+tit <- paste0(plot_dir, "3.1_rename_cell_type_umap_split_group")
+p <- DimPlot(object = sce_plot, label = F, raster = FALSE, reduction = "umap", cols = cols_celltypes, split.by = 'stim') +
+  scale_color_manual(values = cols_celltypes)
+pdf(paste0(tit, ".pdf"), width = 22, height = 7)
+print(p)
+dev.off()
+f2g(paste0(tit, ".pdf"), paste0(tit, ".png"))
+
+tit <- paste0(plot_dir, "3.1_rename_cell_type_tsne")
+p <- DimPlot(object = sce_plot, label = T, raster = FALSE, reduction = "tsne", cols = cols_celltypes) +
+  scale_color_manual(values = cols_celltypes)
+p
+pdf(paste0(tit, ".pdf"), width = 9, height = 7)
+print(p)
+dev.off()
+f2g(paste0(tit, ".pdf"), paste0(tit, ".png"))
+
+tit <- paste0(plot_dir, "3.1_rename_cell_type_tsne_split_group")
+p <- DimPlot(object = sce_plot, label = F, raster = FALSE, reduction = "tsne", cols = cols_celltypes, split.by = 'stim') +
+  scale_color_manual(values = cols_celltypes)
+pdf(paste0(tit, ".pdf"), width = 22, height = 7)
+print(p)
+dev.off()
+f2g(paste0(tit, ".pdf"), paste0(tit, ".png"))
+
+```
+
+# 4 细胞数目
+```{r}
+cell_counts <- FetchData(sce, vars = c("cell")) %>%
+  dplyr::count(cell) %>%
+  dplyr::mutate(
+    percentage = n / sum(n) * 100,
+    label = paste0(round(percentage, 1), "%"),
+    cell = factor(cell, levels = names(cols_celltypes))  
+  )
+
+pl <- ggplot(cell_counts, aes(x = "", y = percentage, fill = cell)) +
+  geom_bar(stat = "identity", width = 1) +
+  coord_polar(theta = "y") +
+  geom_text(aes(label = paste0(round(percentage, 1), "%")), 
+            position = position_stack(vjust = 0.5),
+            size = 4, fontface = "bold") +
+  scale_fill_manual(values = cols_celltypes) +
+  theme_void() +
+  labs(title = "Cell Type Distribution") +
+  theme(legend.position = "right")
+pl
+
+tit <- paste0(plot_dir, "4.1_cell_type_number")
+pdf(paste0(tit, ".pdf"), width = 6, height = 6)
+print(pl)
+dev.off()
+f2g(paste0(tit, ".pdf"), paste0(tit, ".png"))
+
+```

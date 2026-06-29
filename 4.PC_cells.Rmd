@@ -1,0 +1,169 @@
+---
+title: "11.PC_cells"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+library(Seurat)
+library(tidyverse)
+library(scDblFinder)
+library(SingleCellExperiment)
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(ggpubr)
+library(patchwork)
+```
+
+# load data
+
+```{r}
+out_dir <- paste0("../result_review/anno_res/")
+plot_dir <- paste0("../result_review/plot_OnlyDoub/")
+sce <- readRDS(paste0("../result_review/anno_res_OnlyDoub/", "sce.rds"))
+sce
+```
+
+
+# marker FeaturePlot
+```{r, fig.width=10, fig.height=4}
+FeaturePlot(
+  sce,
+  reduction = "tsne",
+  features = c("CD68", "COL1A1"),
+  pt.size = 0.2,
+  cols = c("grey92", "hotpink"),
+  order = TRUE,
+  min.cutoff = 'q10',
+  label = FALSE)
+
+FeaturePlot(
+  sce,
+  reduction = "tsne",
+  features = c("MSLN", "TJP1", "PDPN", "ICAM1", "CDH1", "KRT19", "LRRN4", "COL1A1"),
+  pt.size = 0.4,
+  order = TRUE,
+  min.cutoff = 'q10',
+  label = FALSE)
+```
+
+
+# CD68+COL1A1+ plot
+```{r}
+DefaultAssay(sce) <- "RNA"
+threshold <- 0
+
+sce$celltype <- ifelse(
+  FetchData(sce, vars = 'CD68', layer = "data") > threshold & FetchData(sce, vars = 'COL1A1', layer = "data") > threshold, 'CD68+COL1A1+',
+  ifelse(FetchData(sce, vars = 'CD68', layer = "data") > threshold, 'CD68+',
+         ifelse(FetchData(sce, vars = 'COL1A1', layer = "data") > threshold, 'COL1A1+', 'Other')))
+
+colors <- c('CD68+' = '#72bd43', 'COL1A1+' = '#f4c774', 'CD68+COL1A1+' = '#d83d44', 'Other' = 'grey92')
+pl <- DimPlot(sce, 
+        reduction = "tsne",
+        group.by = 'celltype', 
+        cols = colors, 
+        pt.size = 0.2) +
+  theme_void() +
+  theme(legend.position = "top") 
+
+tit <- paste0(plot_dir, "5.1_all_CD68_COL1A1_cell")
+pdf(paste0(tit, ".pdf"), width = 6, height = 6)
+print(pl)
+dev.off()
+f2g(paste0(tit, ".pdf"), paste0(tit, ".png"))
+
+sce$celltype2 <- ifelse(FetchData(sce, vars = 'CD68', layer = "data") > threshold & FetchData(sce, vars = 'COL1A1',  layer = "data") > threshold,
+                       'CD68+COL1A1+', 'Other')
+colors <- c('CD68+COL1A1+' = '#d83d44', 'Other' = 'grey92')
+pl <- DimPlot(sce, 
+        reduction = "tsne",
+        group.by = 'celltype2', 
+        cols = colors, 
+        pt.size = 0.2) +
+  theme_void() +
+  theme(legend.position = "top") 
+tit <- paste0(plot_dir, "5.2_CD68+COL1A1+cell")
+pdf(paste0(tit, ".pdf"), width = 6, height = 6)
+print(pl)
+dev.off()
+f2g(paste0(tit, ".pdf"), paste0(tit, ".png"))
+
+sce$celltype3 <- ifelse(FetchData(sce, vars = 'COL1A1',  layer = "data") > threshold, 'COL1A1+', 'Other')
+colors <- c('COL1A1+' = '#f4c774', 'Other' = 'grey92')
+pl <- DimPlot(sce, 
+        reduction = "tsne",
+        group.by = 'celltype3', 
+        cols = colors, 
+        pt.size = 0.2) +
+  theme_void() +
+  theme(legend.position = "top") 
+tit <- paste0(plot_dir, "5.3_COL1A1+cell")
+pdf(paste0(tit, ".pdf"), width = 6, height = 6)
+print(pl)
+dev.off()
+f2g(paste0(tit, ".pdf"), paste0(tit, ".png"))
+
+# umap
+colors <- c('CD68+' = '#72bd43', 'COL1A1+' = '#f4c774', 'CD68+COL1A1+' = '#d83d44', 'Other' = 'grey92')
+pl <- DimPlot(sce, 
+        reduction = "umap",
+        group.by = 'celltype', 
+        cols = colors, 
+        pt.size = 0.2) +
+  theme_void() +
+  theme(legend.position = "top") 
+
+tit <- paste0(plot_dir, "5.1_all_CD68_COL1A1_cell_umap")
+pdf(paste0(tit, ".pdf"), width = 6, height = 6)
+print(pl)
+dev.off()
+f2g(paste0(tit, ".pdf"), paste0(tit, ".png"))
+
+
+colors <- c('CD68+COL1A1+' = '#d83d44', 'Other' = 'grey92')
+pl <- DimPlot(sce, 
+        reduction = "umap",
+        group.by = 'celltype2', 
+        cols = colors, 
+        pt.size = 0.2) +
+  theme_void() +
+  theme(legend.position = "top") 
+tit <- paste0(plot_dir, "5.2_CD68+COL1A1+cell_umap")
+pdf(paste0(tit, ".pdf"), width = 6, height = 6)
+print(pl)
+dev.off()
+f2g(paste0(tit, ".pdf"), paste0(tit, ".png"))
+
+colors <- c('COL1A1+' = '#f4c774', 'Other' = 'grey92')
+pl <- DimPlot(sce, 
+        reduction = "umap",
+        group.by = 'celltype3', 
+        cols = colors, 
+        pt.size = 0.2) +
+  theme_void() +
+  theme(legend.position = "top") 
+tit <- paste0(plot_dir, "5.3_COL1A1+cell_umap")
+pdf(paste0(tit, ".pdf"), width = 6, height = 6)
+print(pl)
+dev.off()
+f2g(paste0(tit, ".pdf"), paste0(tit, ".png"))
+```
+
+```{r}
+# Count of cells with both CD68 and COL1A1
+both_cd68_col1a1 <- sum(sce$celltype == 'CD68+COL1A1+')
+cat("CD68+COL1A1+ : ", both_cd68_col1a1, "\n")
+
+# Count of cells with only COL1A1
+only_col1a1 <- sum(sce$celltype == 'COL1A1+')
+cat("only_col1a1 : ", only_col1a1, "\n")
+
+# Count of cells with only CD68
+only_cd68 <- sum(sce$celltype == 'CD68+')
+
+# Calculate the percentage
+cat("CD68+COL1A1+ / COL1A1+: ", (both_cd68_col1a1 / (both_cd68_col1a1 + only_col1a1)) * 100, "%\n")
+cat("CD68+COL1A1+ / CD68+: ", (both_cd68_col1a1 / (both_cd68_col1a1 + only_cd68)) * 100, "%\n")
+```

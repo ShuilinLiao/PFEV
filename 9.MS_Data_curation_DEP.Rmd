@@ -1,0 +1,185 @@
+---
+title: "1.Data_cura.Rmd"
+output: html_document
+---
+
+```{r setup, include=T}
+knitr::opts_chunk$set(warning = F, message = F)
+library(dplyr)
+library(data.table)
+library(tibble)
+library(tidyr)
+library(impute)
+library(scatterplot3d)
+library(ggforce)
+library(limma)
+library(sva)
+rm(list = ls())
+options(stringsAsFactors = F)
+options(future.globals.maxSize = 1000 * 1024^2)
+```
+
+# load data
+```{r}
+expr_old <- read.csv("../data_MS/20240309_192835_20240309_tims_DM_raoqingqing_EV_6runs_Report_protein.csv", check.names = F)
+expr_new <- read.csv("../data_MS/20251115_163502_20251114_ZQ_tims_DM_raoqingqing_10runs_sp20.2_Report_protein.csv", check.names = F)
+
+int_genes <- intersect(expr_old$Gene, expr_new$Gene)
+expr_old <- filter(expr_old, Gene %in% int_genes)
+expr_new <- filter(expr_new, Gene %in% int_genes)
+
+phen_old <- data.frame(SampleID = colnames(expr_old)[-1]) %>% mutate(Group = substr(SampleID, 1, 1))
+phen_new <- data.frame(SampleID = colnames(expr_new)[-1]) %>% mutate(Group = substr(SampleID, 1, 1))
+
+phen_merge <- rbind(phen_old %>% mutate(batch = "old"), phen_new %>% mutate(batch = "new"))
+```
+
+# data curation
+```{r}
+process_protein_matrix <- function(multiGene = "Single", protein_matrix, phenotype_matrix) {
+  # protein_matrix = expr_old
+  # multiGene = "Single"
+  
+  # Step 1: Handle rows with multiple gene names
+  if(multiGene == "Copy"){
+    df = protein_matrix
+    df$Gene <- as.character(df$Gene)
+    split_rows <- strsplit(df$Gene, ";")
+    split_lengths <- sapply(split_rows, length)
+    df_expanded <- df[rep(1:nrow(df), split_lengths), ]
+    df_expanded$Gene <- unlist(split_rows)
+    df_expanded <- df_expanded[, c("Gene", colnames(df)[-which(names(df) == "Gene")])]
+    protein_matrix <- df_expanded
+  }else{
+    # Keep only the first gene ID if multiple
+    df = protein_matrix
+    df$Gene <- as.character(df$Gene)
+    df$Gene <- sapply(strsplit(df$Gene, ";"), `[`, 1)
+    protein_matrix <- df
+  }
+  
+  # Step 2: Replace 0s with NA
+  protein_matrix[protein_matrix == 0] <- NA
+  
+  # Remove duplicate Gene rows, keeping the first occurrence
+  rownames(protein_matrix) <- NULL
+  protein_matrix <- protein_matrix %>% 
+    distinct(Gene, .keep_all = TRUE) %>%
+    dplyr::select(-one_of("Protein")) %>%
+     filter(is.character(Gene) & !is.na(Gene)) %>% 
+    column_to_rownames("Gene")
+  
+  # Step 3: Calculate the Fraction of Total (FOT)
+  total_iBAQ <- apply(protein_matrix, 2, function(x) sum(x, na.rm = TRUE))
+  FOT_matrix <- sweep(protein_matrix, 2, total_iBAQ, FUN = "/")
+  FOT_matrix <- FOT_matrix * 10^5 
+  
+  # Step 4: Process missing values based on detection rate per protein
+  FOT_matrix_t <- t(FOT_matrix)
+  detection_rate <- colSums(!is.na(FOT_matrix_t)) / nrow(FOT_matrix_t)
+  
+  # 50% <= detection rate
+  detection_over50 <- detection_rate[detection_rate >= 0.5]
+  imput_over50 <- FOT_matrix_t[, names(detection_over50)]
+  imput_tem <- impute.knn(as.matrix(t(imput_over50)), rowmax = 100, colmax = 100)$data %>% data.frame(check.names = F)
+  imput_over50 <- imput_tem %>% t()
+  
+  # detection rate < 50%
+  detection_lower50 <- detection_rate[detection_rate < 0.5 & detection_rate > 0]
+  imput_lower50 <- FOT_matrix_t[, names(detection_lower50)]
+  for (i in 1:ncol(imput_lower50)) {
+    imput_lower50[is.na(imput_lower50[, i]), i] <- min(as.numeric(imput_lower50[,i]), na.rm = TRUE) / 10
+  }
+  
+  FOT_matrix_impute <-  cbind(imput_over50, imput_lower50) %>% t() %>% data.frame(check.names = F)
+  return(FOT_matrix_impute)
+}
+
+expr_old_impute <- process_protein_matrix(protein_matrix = expr_old, multiGene = "Single")
+expr_new_impute <- process_protein_matrix(protein_matrix = expr_new, multiGene = "Single")
+
+```
+
+# PCA
+```{r}
+PCA_Plot <- function(input_d, phen_dat, grps, cols = c("#92c5de", "#d6604d")){
+  
+  # input_d = expr_old_impute
+  # phen_dat = phen_old
+  # grps = c("S", "L")
+  # cols = c("#92c5de", "#d6604d")
+  
+  pca <- prcomp(t(input_d), scale. = T, center = T)
+  pca_dat <- pca$x %>% 
+    data.frame() %>%
+    dplyr::select(c(1:3)) %>%
+    rownames_to_column("SampleID") %>%
+    inner_join(phen_dat, by = "SampleID")
+  
+  pca_dat$Group <- factor(pca_dat$Group, levels = grps)
+  percentage <- round(pca$sdev / sum(pca$sdev) * 100,2)
+  
+  p12 <- ggplot(pca_dat, aes(x=PC1, y=PC2))+
+        geom_point(aes(color=Group), size=3.5)+
+        geom_text(aes(label = SampleID), vjust = -1, hjust = 0.5, size = 3, color = "black")+
+        scale_color_manual(values = cols)+
+        scale_fill_manual(values = cols)+
+        theme_minimal() +
+        theme(axis.title = element_text(size=10, color="black", face="bold"),
+              axis.text = element_text(size=9, color="black"),
+              text = element_text(size=8, color="black"),
+              strip.text = element_text(size=9, color="black", face="bold"), 
+              panel.grid = element_blank(),
+              legend.position = "top",
+              panel.grid.major = element_blank(),
+              panel.grid.minor = element_blank(),
+              panel.border = element_blank(),
+              axis.line = element_line(), # 只展示左半边坐标轴
+              # legend.text=element_text(size=11, color = "black"),
+              # legend.title=element_text(size=10,color="black", face="bold"),
+              # legend.background = element_rect(color = "black", fill="white")
+              )+
+    # geom_mark_ellipse(aes(fill=Group, color = Group), alpha=0.3, expand = 0.01)+
+    coord_cartesian(clip = "off")+ # off on
+    xlab(paste0("PC1 (", percentage[1], "%)")) +
+    ylab(paste0("PC2 (", percentage[2], "%)"))
+  
+  return(p12)
+}
+
+PCA_Plot(input_d = expr_old_impute, phen_dat = phen_old, grps = c("S", "L"))
+PCA_Plot(input_d = expr_new_impute, phen_dat = phen_new, grps = c("S", "L"))
+
+expr_old_impute2 <- expr_old_impute %>% rownames_to_column("gene")
+expr_new_impute2 <- expr_new_impute %>% rownames_to_column("gene")
+expr_merge2 <- inner_join(expr_old_impute2, expr_new_impute2, by = "gene")
+expr_merge <- expr_merge2 %>% column_to_rownames("gene")
+PCA_Plot(input_d = expr_merge, phen_dat = phen_merge, grps = c("S", "L"))
+
+write.csv(expr_merge %>% rownames_to_column("Gene"), "../result_MS/Normalize_NonRemoveBat.csv", quote = F, row.names = F)
+```
+
+# remove batch
+```{r}
+expr_merge <- read.csv("../result_MS/Normalize_NonRemoveBat.csv", row.names = 1)
+phen_merge <- data.frame(SampleID = colnames(expr_merge)) %>% 
+  mutate(Group = substr(SampleID, 1, 1)) %>%
+  mutate(batch = case_when(
+    as.numeric(substr(SampleID, 2, nchar(SampleID))) %in% 1:3 ~ "old",
+    as.numeric(substr(SampleID, 2, nchar(SampleID))) %in% 4:8 ~ "new",
+    TRUE ~ NA_character_ 
+  ))
+expr_merge_log <- log2(expr_merge)
+
+# limma-- removeBatchEffect
+design = model.matrix(~Group, data = phen_merge)
+Batch_limma <- removeBatchEffect(expr_merge_log, batch = batch, design = design) %>% data.frame()
+write.csv(Batch_limma %>% rownames_to_column("Gene"), "../result_MS/Normalize_RemoveBat.csv", quote = F, row.names = F)
+
+fit <- lmFit(Batch_limma, design)
+fit <- eBayes(fit)
+deg_results <- topTable(fit, coef = "GroupS", number = Inf, adjust.method = "BH") %>% rownames_to_column("Gene")
+write.csv(deg_results, "../result_MS/Normalize_RemoveBat_DEP.csv", quote = F, row.names = F)
+
+PCA_Plot(input_d = Batch_limma, phen_dat = phen_merge, grps = c("S", "L"))
+```

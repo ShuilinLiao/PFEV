@@ -1,0 +1,173 @@
+---
+title: "07_2.CellChat_plot.Rmd"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(CellChat)
+library(Seurat)
+library(NMF)
+library(ggalluvial)
+```
+
+# load data
+```{r}
+plot_dir <- paste0("../result_review/plot/")
+out_dir =  "../result_review/CellChat/"
+item = "PD_split" # PD PD_split SPD LPD
+
+if(item == "PD"){
+  out_put = "input_CellChat"
+}else if(item == "SPD"){
+  out_put = "input_CellChat_SPD"
+}else if(item == "LPD"){
+  out_put = "input_CellChat_LPD"
+}else if(item == "PD_split"){
+  out_put = "input_CellChat_PD_split"
+}
+
+load(paste0(out_dir, out_put, ".rda"))
+source("./functions.R")
+```
+
+# 配受体表达图 ("CSF1", "CSF1R")
+```{r}
+obj <- readRDS(paste0("../result_review/anno_res/", "sce.rds"))
+DefaultAssay(obj) <- "RNA"
+
+CSF_LR_tsne <- FeaturePlot(
+  obj,
+  reduction = "umap",  # tsne umap
+  features = c("CSF1", "CSF1R"),
+  pt.size = 0.4,
+  order = TRUE,
+  min.cutoff = 'q10',
+  label = TRUE) &
+  scale_colour_gradientn(colors = RColorBrewer::brewer.pal(n = 100, name = "Reds")) 
+CSF_LR_tsne
+
+tit <- paste0(plot_dir, "6.1_CSF_LR_umap_", out_put)
+pdf(paste0(tit, ".pdf"), width = 10, height = 4)
+print(CSF_LR_tsne)
+dev.off()
+f2g(paste0(tit, ".pdf"), paste0(tit, ".png")) 
+```
+
+# get data
+```{r}
+groupSize <- as.numeric(table(cellchat@idents))
+
+ct_group = levels(cellchat@idents)
+names(ct_group) = levels(cellchat@idents)
+
+ct_group2 = levels(cellchat@idents)
+names(ct_group2) = 1: length(ct_group2)
+
+ct_group_df <- data.frame(ct_group2, ct_group)
+all_pathways <- cellchat@netP$pathways
+all_pathways %>% sort()
+
+head(df.net)
+```
+
+# total net
+```{r}
+dat = cellchat@net$count
+# 整合的互作对数量展示
+if(item %in% c("PD", "SPD", "LPD")){
+  tit <- paste0(plot_dir, "6.2_CellChat_LR", out_put)
+  pdf(paste0(tit, ".pdf"), width = 10, height = 10)
+    
+  netVisual_circle(cellchat@net$count,
+                   vertex.weight = groupSize,
+                   weight.scale = T,
+                   label.edge= F,
+                   title.name = "Number of interactions")
+  dev.off()
+  f2g(paste0(tit, ".pdf"), paste0(tit, ".png"))
+}
+
+# 分细胞类型展示
+weight_mat <- cellchat@net$weight
+
+cel = "Mono"
+cir_mat <- matrix(0, nrow = nrow(weight_mat), ncol = ncol(weight_mat), dimnames = dimnames(weight_mat))
+cir_mat[cel, ] <- weight_mat[cel, ]
+cir_mat_view <- t(cir_mat) %>% data.frame()
+netVisual_circle( cir_mat, 
+                  vertex.weight= groupSize, 
+                  weight.scale= T,
+                  edge.weight.max = max(weight_mat), 
+                  vertex.label.cex = 1,
+                  title.name=cel)
+
+```
+
+# subnet
+```{r}
+## chord
+if(item %in% c("PD", "SPD", "LPD")){
+  
+  prob <- slot(cellchat, "net")$prob
+  pval <- slot(cellchat, "net")$pval
+  prob[pval > 0.05] <- 0
+  net <- reshape2::melt(prob, value.name = "prob")
+  colnames(net)[1:3] <- c("source", "target", "interaction_name")
+  pairLR = dplyr::select(cellchat@LR$LRsig, c("interaction_name_2", 
+    "pathway_name", "ligand", "receptor", "annotation", 
+    "evidence"))
+  idx <- match(net$interaction_name, rownames(pairLR))
+  temp <- pairLR[idx, ]
+  net <- cbind(net, temp)
+  
+  idx1 = which(ct_group == "Perito")
+  idx2 = which(ct_group == "Mono")
+  net_fil = net %>% filter(source == "Perito") %>% filter(target == "Mono")
+  
+  tit <- paste0(plot_dir, "6.4_CellChat_chord_", out_put)
+  pdf(paste0(tit, ".pdf"), width = 10, height = 10)
+  netVisual_chord_gene(cellchat, 
+                       sources.use = c(idx1), 
+                       targets.use = c(idx2),
+                       lab.cex = 0.7,
+                       legend.pos.y = 30)
+  dev.off()
+  f2g(paste0(tit, ".pdf"), paste0(tit, ".png"))
+}
+
+## bubble
+if(item == "PD_split"){
+  load(paste0(out_dir, "input_CellChat_SPD", ".rda"))
+  SPD = cellchat
+  load(paste0(out_dir, "input_CellChat_LPD", ".rda"))
+  LPD = cellchat
+  
+  cellchat_list <- list(SPD = SPD, LPD = LPD)
+  uterus_cellchat <- mergeCellChat(cellchat_list,add.names = names(cellchat_list))
+  
+  ct_group = levels(SPD@idents)
+  names(ct_group) = levels(cellchat@idents)
+  idx1 = which(ct_group == "Perito")
+  idx2 = which(ct_group == "Mono")
+  
+  signaling_pathway <- c("CSF")
+  tit <- paste0(plot_dir, "6.5_CellChat_bubble_", signaling_pathway, "_", out_put)
+  p <- netVisual_bubble(uterus_cellchat,
+                        # signaling = signaling_pathway,
+                        sources.use = c(idx1),
+                        sort.by.source = T,
+                        sort.by.target = T,
+                        targets.use = c(idx2), 
+                        remove.isolate = T,
+                        comparison = c(1, 2))
+  p
+  pdf(paste0(tit, ".pdf"), width = 3, height = 5)
+  print(p)
+  dev.off()
+  f2g(paste0(tit, ".pdf"), paste0(tit, ".png")) 
+
+}
+```
+
+

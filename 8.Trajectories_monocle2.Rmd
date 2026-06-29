@@ -1,0 +1,222 @@
+---
+title: "5.1.Trajectories_annalysis2"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+rm(list = ls())
+options(stringsAsFactors = F)
+options(future.globals.maxSize = 1000 * 1024^2)
+
+library(dplyr)
+library(Seurat)
+library(monocle)
+library(patchwork)
+library(igraph)
+library(data.table)
+
+```
+
+# load data
+```{r}
+source("./functions.R")
+plot_dir <- paste0("../result_review/plot/")
+res_dir <- "../result_review/Monocle2/"
+```
+
+# creat CDS object
+## step1 (ASUS)
+```{r}
+item = "Mono_LPD" 
+sele_cell <- switch(item, 
+  "Mono_Perito" = c("Mono", "Perito"),
+  "Mono"        = c("Mono"),
+  "Perito"      = c("Perito"),
+  "Mono_LPD"    = c("Mono"))
+
+sce <- readRDS(paste0("../result_review/anno_res/", "sce.rds"))
+DefaultAssay(sce) <- "RNA"
+
+if(item == "Mono_LPD"){
+  sce_sub <- subset(sce, cell %in% sele_cell)
+  sce_sub <- subset(sce_sub, stim %in% c("LTPD1", "LTPD2", "LTPD3", "LTPD4"))
+}else{
+  sce_sub <- subset(sce, cell %in% sele_cell)
+}
+
+# expr_matrix <- as(as.matrix(sce_sub@assays$RNA@counts),'sparseMatrix')
+expr_matrix <- as(LayerData(sce_sub, assay = "RNA", layer = "counts"), 'sparseMatrix')
+p_data <- sce_sub@meta.data
+unique(p_data$seurat_clusters)
+f_data <- data.frame(gene_short_name = row.names(sce_sub), row.names = row.names(sce_sub))
+
+pd <- new('AnnotatedDataFrame',data = p_data)
+fd <- new('AnnotatedDataFrame',data = f_data)
+
+cds_raw <- newCellDataSet(expr_matrix, 
+                          phenoData = pd, 
+                          featureData = fd,
+                          lowerDetectionLimit = 0.5, 
+                          expressionFamily = negbinomial.size())
+
+saveRDS(cds_raw, paste0(res_dir, "Mono_monocle2_", item, "_step1.rds"))
+```
+
+## step2
+```{r}
+### order cells along the trajectory
+cds_raw <- readRDS(paste0(res_dir, "Mono_monocle2_", item, "_step1.rds"))
+
+## Estimate size factors and dispersions & Filtering low-quality cells
+cds_raw <- estimateSizeFactors(cds_raw)
+cds_raw <- estimateDispersions(cds_raw)
+cds_raw <- detectGenes(cds_raw, min_expr = 0.1) 
+# expressed_genes <- row.names(cds_raw)
+
+cds_raw <- cds_raw[fData(cds_raw)$num_cells_expressed > 10, ]
+expressed_genes <- row.names(subset(fData(cds_raw), num_cells_expressed >= 10))
+
+## Constructing Single Cell Trajectories
+### choose genes that define a cell's progress
+diff <- differentialGeneTest(cds_raw[expressed_genes,], fullModelFormulaStr = "~seurat_clusters") # 按聚类检测差异基因
+deg <- subset(diff, qval < 0.01)
+deg <- deg[order(deg$qval, decreasing = F), ]
+
+## Trajectories
+# ordering_genes <- rownames(deg)
+ordering_genes <- rownames(deg)[order(deg$qval)][1:400]
+cds_raw <- setOrderingFilter(cds_raw, ordering_genes)
+
+### reduce data dimensionality
+cds_raw <- reduceDimension(cds_raw, max_components = 2, method = 'DDRTree')
+cds_raw <- orderCells(cds_raw)
+
+write.csv(diff, paste0(res_dir, "Mono_monocle2_diff_gene_", item, ".csv"))
+saveRDS(cds_raw, paste0(res_dir, "Mono_monocle2_", item, "_step2.rds"))
+
+```
+
+# plot
+## 将recluster的信息映射回Mono_LPD的拟时分析中
+```{r}
+item = "Mono_LPD" # Mono_Perito Mono Perito Mono_LPD
+type = "Original" # Original recluster
+if(type == "recluster"){
+  cds_raw <- readRDS(paste0(res_dir, "Mono_monocle2_", type, "_", item, "_step2.rds"))
+}else{
+  cds_raw <- readRDS(paste0(res_dir, "Mono_monocle2_", item, "_step2.rds"))
+}
+p1 <- plot_cell_trajectory(cds_raw, color_by = "Pseudotime", size=1, show_backbone=TRUE)
+p2 <- plot_cell_trajectory(cds_raw, color_by = "State", size=1, show_backbone=TRUE)
+p3 <- plot_cell_trajectory(cds_raw, color_by = "seurat_clusters", size=1, show_backbone=TRUE) # seurat_clusters integrated_snn_res.0.6
+p4 <- plot_cell_trajectory(cds_raw, color_by = "cell", size=1, show_backbone=TRUE)
+plotc <- p1|p2|p3|p4
+plotc
+pref_plot <- paste0(plot_dir, "8.1_", item, "_Pseudotime")
+pdf(paste0(pref_plot, ".pdf"), width = 5, height = 5)
+print(p1)
+dev.off()
+f2g(paste0(pref_plot, ".pdf"), paste0(pref_plot, ".png"))
+
+p5 <- plot_cell_trajectory(cds_raw, markers = c("ACTA2"), use_color_gradient = TRUE)
+p6 <- plot_cell_trajectory(cds_raw, markers = c("COL1A1"), use_color_gradient = TRUE)
+p7 <- plot_cell_trajectory(cds_raw, markers = c("COL1A2"), use_color_gradient = TRUE)
+p8 <- plot_cell_trajectory(cds_raw, markers = c("CSF1"), use_color_gradient = TRUE)
+p9 <- plot_cell_trajectory(cds_raw, markers = c("CSF1R"), use_color_gradient = TRUE)
+plotc2 <- p6|p7
+plotc2
+pref_plot <- paste0(plot_dir, "8.3_", item, "_COL1A1_COL1A2")
+pdf(paste0(pref_plot, ".pdf"), width = 10, height = 5)
+print(plotc2)
+dev.off()
+f2g(paste0(pref_plot, ".pdf"), paste0(pref_plot, ".png"))
+
+##=== other sce group info
+sce_reclu <- readRDS(paste0(res_dir, item, "_recluster.rds")) %>% subset(cell %in% "Mono")
+threshold <- 0
+sce_reclu$type <- ifelse(
+  FetchData(sce_reclu, vars = 'CD68', layer = "data") > threshold & FetchData(sce_reclu, vars = 'COL1A1', layer = "data") > threshold,
+  'CD68+COL1A1+',
+  ifelse(FetchData(sce_reclu, vars = 'CD68', layer = "data") > threshold, 'CD68+',
+         ifelse(FetchData(sce_reclu, vars = 'COL1A1', layer = "data") > threshold, 'COL1A1+', 'Other')))
+
+sce_metadata <- sce_reclu@meta.data[, "integrated_snn_res.0.6", drop = FALSE]
+pData(cds_raw)$integrated_snn_res.0.6 <- sce_metadata[rownames(pData(cds_raw)), "integrated_snn_res.0.6"]
+head(pData(cds_raw)[, "integrated_snn_res.0.6"])
+sce_metadata <- sce_reclu@meta.data[, "type", drop = FALSE]
+pData(cds_raw)$type <- sce_metadata[rownames(pData(cds_raw)), "type"]
+head(pData(cds_raw)[, "type"])
+
+mono_idx <- which(pData(cds_raw)$cell == "Mono")
+cds_mono <- cds_raw[, mono_idx]
+dim_coords <- reducedDimS(cds_raw)[, mono_idx]
+
+# 对于CD68和COL1A1的type
+plot_df <- data.frame(
+  Dim1 = dim_coords[1, ],
+  Dim2 = dim_coords[2, ],
+  cluster = as.factor(pData(cds_raw)$type[mono_idx]), # integrated_snn_res.0.6 type
+  pseudotime = pData(cds_raw)$Pseudotime[mono_idx],
+  state = pData(cds_raw)$State[mono_idx])
+
+pl <- ggplot(plot_df, aes(x = Dim1, y = Dim2, color = cluster)) +
+  geom_point(size = 1, alpha = 0.8) +
+  # scale_color_manual(name = "SNN 0.6", 
+  #                    values = my_colors,
+  #                    breaks = c(5, 9, 10, setdiff(all_clusters, c(5,9,10)))) +
+  theme_minimal() +
+  theme(
+    panel.grid = element_blank(),
+    panel.border = element_rect(fill = NA, color = "gray50"),
+    plot.title = element_text(size = 10, hjust = 0.5)) +
+  labs(title = paste0("Mono cells (n=", length(mono_idx), ")"),
+       x = "Component 1",
+       y = "Component 2")
+
+pref_plot <- paste0(plot_dir, "8.4_", item, "_CD68+COL1A1+group")
+pdf(paste0(pref_plot, ".pdf"), width = 7, height = 5)
+print(pl)
+dev.off()
+f2g(paste0(pref_plot, ".pdf"), paste0(pref_plot, ".png"))
+
+# 对于recluster
+plot_df <- data.frame(
+  Dim1 = dim_coords[1, ],
+  Dim2 = dim_coords[2, ],
+  cluster = as.factor(pData(cds_raw)$integrated_snn_res.0.6[mono_idx]), # integrated_snn_res.0.6 type
+  pseudotime = pData(cds_raw)$Pseudotime[mono_idx],
+  state = pData(cds_raw)$State[mono_idx])
+all_clusters <- sort(unique(plot_df$cluster))
+my_colors <- c()
+for(cluster in all_clusters) {
+  if(cluster == 1) {
+    my_colors[cluster] <- "#4DAF4A"  # 鲜绿色
+  } else if(cluster == 2) {
+    my_colors[cluster] <- "#E41A1C"  # 鲜红色
+  } else {
+    my_colors[cluster] <- "#D3D3D3"  # 浅灰色
+  }
+}
+
+pl <- ggplot(plot_df, aes(x = Dim1, y = Dim2, color = cluster)) +
+  geom_point(size = 1, alpha = 0.8) +
+  scale_color_manual(name = "SNN 0.6",
+                     values = my_colors,
+                     breaks = c(5, 9, 10, setdiff(all_clusters, c(5,9,10)))) +
+  theme_minimal() +
+  theme(
+    panel.grid = element_blank(),
+    panel.border = element_rect(fill = NA, color = "gray50"),
+    plot.title = element_text(size = 10, hjust = 0.5)) +
+  labs(title = paste0("Mono cells (n=", length(mono_idx), ")"),
+       x = "Component 1",
+       y = "Component 2")
+pl
+pref_plot <- paste0(plot_dir, "8.2_", item, "_recluster_group")
+pdf(paste0(pref_plot, ".pdf"), width = 7, height = 5)
+print(pl)
+dev.off()
+f2g(paste0(pref_plot, ".pdf"), paste0(pref_plot, ".png"))
+```
